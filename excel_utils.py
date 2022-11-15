@@ -1,12 +1,13 @@
-#!/usr/bin/env python
+#!/usr/bin/python
 # -*- coding: utf-8 -*-
 
 """
 @File    :   excel_util.py
-@Time    :   2022/08/04 15:19:23
-@Author  :   Ysm
+@Time    :   2022/11/15 15:19:23
+@Author  :   ysm
 @Contact :   rootlulu@163.com
 """
+
 
 import logging as log
 import os
@@ -17,9 +18,9 @@ import typing as t
 from openpyxl import Workbook as WB
 from openpyxl import load_workbook
 from openpyxl.cell import Cell
+from openpyxl.styles import Alignment
 from openpyxl.styles import Font
 from openpyxl.styles import PatternFill
-from openpyxl.styles import Alignment
 from openpyxl.utils import column_index_from_string
 from openpyxl.utils.exceptions import InvalidFileException
 
@@ -36,11 +37,11 @@ class _WorkBook:
         [WorkBook]:
     """
 
-    # todo： multiprocess in problem.
+    # todo： multiprocess would be in problem, but ignore it here.
     singleton = {}
     SUFFIX = SUPPORTED_FILE_TYPE
 
-    def __new__(cls, filename: t.AnyStr) -> WB:
+    def __new__(cls, filename: t.AnyStr, read_only: bool = False) -> WB:
         if filename not in cls.singleton:
             if not filename.endswith(cls.SUFFIX):
                 raise InvalidFileException(
@@ -49,7 +50,7 @@ class _WorkBook:
                 )
             if os.path.exists(filename):
                 log.info(f"Open the existed file: {filename}")
-                wb = load_workbook(filename)
+                wb = load_workbook(filename, read_only=read_only)
             else:
                 log.info(f"Open a new file: {filename}")
                 wb = WB()
@@ -68,7 +69,7 @@ class Validator:
 class _WorkSheetMixin:
     @staticmethod
     def _gen_col_name() -> t.AnyStr:
-        """generate the col_name from A to Z.
+        """generate the col_name from A to ZZ.
 
         Yields:
             [str]: A B C ... X Y Z"
@@ -78,7 +79,7 @@ class _WorkSheetMixin:
 
         for i in range(_start, _end):
             yield chr(i)
-        raise ValueError("The col nums is too big, which supported only A-Z!")
+        raise ValueError("The col num is too big, which supported only A-Z!")
 
 
 class Styler:
@@ -130,9 +131,25 @@ class ColStyler(Styler):
 
 
 class RowStyler(Styler):
-    """
-    to be padded in the future. Not in use in current.
-    """
+    SUPPORTED_STYLES = {
+        "height": int,
+    }
+
+    def __init__(self, style: dict):
+        if not isinstance(style, dict):
+            raise TypeError("the row type must be a dict")
+        super().__init__(style)
+
+    def __call__(self, row: str) -> None:
+        if isinstance(row, list):
+            for r in row:
+                for k, v in self.style.items():
+                    if not isinstance(v, self.SUPPORTED_STYLES[k]):
+                        raise ValueError(
+                            f"the style: {self.style} is not supported!"
+                        )
+        else:
+            raise TypeError("The row style must be dict")
 
 
 class CellStyler(Styler):
@@ -154,12 +171,12 @@ class CellStyler(Styler):
 
         `fgColor`:      PatternFill.fgColor
         `bgColor`:      PatternFill.bgColor
-        `fill_type`:    PatternFill.fill_type
-
-        `warpText`:     Alignment
+        `patternType`:    PatternFill.patternType
 
         `width`:        width
         `height`:       height
+
+        `wrap_text`:     Alignment()
     """
 
     SUPPORTED_STYLES = {
@@ -175,8 +192,8 @@ class CellStyler(Styler):
             "outline",
             "shadow",
         ),
-        "pattern_fill": ("fgColor", "bgColor", "fill_type"),
-        "alignment": ("warpText",),
+        "pattern_fill": ("fgColor", "bgColor", "patternType"),
+        "alignment": ("wrap_text",),
         # ...
         # ...
         "others": ("width", "height"),
@@ -189,7 +206,7 @@ class CellStyler(Styler):
             self._styled_cell(style, cell)
         if isinstance(self.style, list):
             try:
-                # !!! in the first index, whose col_idx is 1 but the index is 0.
+                # !notice: in the first index, whose col_idx is 1 but the index is 0.
                 style = self.style[cell.col_idx - 1]
             except IndexError:
                 style = None
@@ -199,6 +216,7 @@ class CellStyler(Styler):
         if style:
             self._set_font(cell, style)
             self._set_pattern_fill(cell, style)
+            self._set_alignment(cell, style)
             # ...
             # ...
             self._set_others(cell, style)
@@ -224,7 +242,7 @@ class CellStyler(Styler):
         )
         cell.fill = pattern_fill
 
-    def _set_aligment(self, cell: Cell, style: dict) -> None:
+    def _set_alignment(self, cell: Cell, style: dict) -> None:
         alignment = Alignment(
             **{
                 k: v
@@ -312,11 +330,21 @@ class Row:
 
     def __init__(self: "Row", row_idx: int, style: dict, ws: "WorkSheet"):
         self.ws = ws.ws
-        self.row = self.ws.row_dimensions[row_idx]
+        if row_idx is None:
+            self.rows = [
+                self.ws.row_dimensions[idx]
+                # set from the next of the headers_idx
+                for idx in range(ws.headers_idx + 1, self.ws.max_row + 1)
+            ]
+        else:
+            self.row = self.ws.row_dimensions[row_idx]
         self.style = Style(style, type_="row")
 
     def set(self):
-        self.style(self.row)
+        if hasattr(self, "row"):
+            self.style(self.row)
+        elif hasattr(self, "rows"):
+            self.style(self.rows)
 
 
 class Cell_:
@@ -374,11 +402,14 @@ class IterStyledCell(t.List):
         ws: "WorkSheet",
     ):
         self.row_data = data
-        # self.style = Style(style)
         if isinstance(style, dict):
             self.style = lambda i: style
         elif isinstance(style, list):
             self.style = lambda i: style[i - 1] if len(style) >= i else {}
+        else:
+            raise TypeError(
+                f"The style must be list or dict, not {type(style)}"
+            )
         self.ws = ws.ws
         self._cells = self._styled_cells()
 
@@ -432,7 +463,8 @@ class WorkSheet(_WorkSheetMixin):
 
         `ws`: the worksheet instance.
 
-        `headers`: the headers and col_names correspondency in current worksheet.
+        `headers`: the headers and col_names correspondency in current
+                   worksheet.
             {"name": "A", "sex": "B", "age": "C"}
 
     Args:
@@ -440,17 +472,21 @@ class WorkSheet(_WorkSheetMixin):
 
         `title`: the sheet title, default is Sheet1.
 
-        `index`: the sheet index, default is 1. if the index is set, the title in invalid.
+        `index`: the sheet index, default is 1. if the index is set, the title
+                 in invalid.
 
-        `headers_idx`: the headers index in all rows. if there is a headers_idx, the to_dict
-                read would start from the headers_idx row.
+        `headers_idx`: the headers index in all rows. if there is a headers_idx,
+                       the to_dict
+                       read would start from the headers_idx row.
 
-        `template`: if there is a template, copy it to filename and write to the copy.
+        `template`: if there is a template, copy it to filename and write to
+                    the copy.
 
         `before_styled`: the style before reading or writing the worksheet.
                         {"A": {"color" :"#0FF00"}}
 
-        `before_styled`: the style after reading or writing but before saving the worksheet.
+        `before_styled`: the style after reading or writing but before saving
+                         the worksheet.
 
     """
 
@@ -466,6 +502,7 @@ class WorkSheet(_WorkSheetMixin):
         template: t.Optional[str] = None,
         before_styled: t.Optional[dict] = None,
         after_styled: t.Optional[dict] = None,
+        read_only: bool = False,
     ):
         if template:
             if not os.path.exists(template):
@@ -483,7 +520,8 @@ class WorkSheet(_WorkSheetMixin):
                 )
             if os.path.exists(filename):
                 raise FileExistsError(
-                    f"The destination {filename} is existed, can't override it by tempate file."
+                    f"The destination {filename} is existed, can't override it"
+                    f" by tempate file."
                 )
             shutil.copyfile(template, filename)
 
@@ -501,8 +539,10 @@ class WorkSheet(_WorkSheetMixin):
         assert isinstance(self.before_styled, dict)
         assert isinstance(self.after_styled, dict)
 
+        self.read_only = read_only
+
         self._parent_factory = _WorkBook
-        parent = self._parent_factory(filename)
+        parent = self._parent_factory(filename, read_only)
 
         if index or title:
             if index:
@@ -525,21 +565,22 @@ class WorkSheet(_WorkSheetMixin):
             self._gen_headers()
 
     def _styled_hook(self, style):
-        for k, v in style.items():
-            if isinstance(k, int) and k < 65535:
-                self.set_row_style(k, v)
-            elif (
-                isinstance(k, str)
-                and len(k) == 1
-                and ord(k) > 64
-                and ord(k) < 91
-            ):
-                self.set_col_style(k, v)
-            else:
-                raise TypeError(
-                    "To set a row style in int type keys small than 65535 like: 1, 2, "
-                    "the col is in str type keys in range A-Z like :A, B"
-                )
+        if any(not isinstance(v, dict) for v in style.values()):
+            self.set_row_style(None, style)
+        else:
+            for k, v in style.items():
+                if (
+                    isinstance(k, str)
+                    and len(k) == 1
+                    and ord(k) > 64
+                    and ord(k) < 91
+                ):
+                    self.set_col_style(k, v)
+                else:
+                    raise TypeError(
+                        "To set a row style in int type keys small than 65535 like"
+                        ":1, 2, the col is in str type keys in range A-Z like :A, B"
+                    )
 
     def __enter__(self) -> "WorkSheet":
         self._styled_hook(self.before_styled)
@@ -552,8 +593,11 @@ class WorkSheet(_WorkSheetMixin):
                 f"Error: {exc_type}, msg: {exc_value}, traceback: {traceback}"
             )
         else:
-            self._styled_hook(self.after_styled)
-            self.close()
+            if self.read_only:
+                self.close(save=False)
+            else:
+                self._styled_hook(self.after_styled)
+                self.close()
 
     def _gen_headers(self, max_col: t.Optional[int] = None):
         """
@@ -579,6 +623,7 @@ class WorkSheet(_WorkSheetMixin):
             self.ws.parent.close()
         except:
             log.error(traceback.format_exc())
+            self.ws.parent.close()
         finally:
             self._parent_factory.singleton.pop(self.ws.parent.filename)
 
@@ -614,13 +659,14 @@ class WorkSheet(_WorkSheetMixin):
             `max_col`: how many lines would to read. return whole col if there
                 is not a value.
 
-            `show_col_names` (bool, optional): Defaults to False. see on the above.
+            `show_col_names` (bool, optional): Defaults to False. see on the
+                                               above.
 
             `col_mapping` (Union[bool, Dict], optional):
                 for example:
-                    the previous data: {"name": "男孩", "sex": "女孩", "age": "李韬"}
+                    the previous data: {"name": "男孩", "sex": "女孩", "age": "1"}
                     while the re_col = {"name": "名字", "sex": "性别"}
-                    the after data: {"名字": "男孩", "性别": "女孩", "age": "李韬"}
+                    the after data: {"名字": "男孩", "性别": "女孩", "age": "1"}
                 important: only function in the show_col_names is False.
 
         Yields:
@@ -638,7 +684,8 @@ class WorkSheet(_WorkSheetMixin):
             col_mapping = {}
         if show_col_names and col_mapping:
             log.warning(
-                f"If show_col_names is set to True, the col_mapping param would be ignored."
+                f"If show_col_names is set to True, the col_mapping param would"
+                f"be ignored."
             )
             col_mapping = {}
         for i, row in enumerate(
@@ -650,7 +697,8 @@ class WorkSheet(_WorkSheetMixin):
                 # jump the blank line
                 continue
             if not self.headers:
-                # generagte the self.headers. and write the headers to current sheet.
+                # generagte the self.headers. and write the headers to current
+                # sheet.
                 self._gen_headers(max_col=max_col)
                 if show_col_names:
                     yield {
@@ -682,12 +730,12 @@ class WorkSheet(_WorkSheetMixin):
     ):
         """append a row to the worksheet.
             if the iterable is a iterable:
-                if current_row is 0(means the first row) or there is not a header
-                    in self, it will be the headers.
+                if current_row is 0(means the first row) or there is not a
+                header in self, it will be the headers.
                 if the current_row is not 0, it will append to the next row.
             if the iterable is a dict:
-                if the current_row is 0 or there is not a header in self, it will
-                    be the headers
+                if the current_row is 0 or there is not a header in self, it
+                will be the headers
                 else append the iterable to the next row.
 
             IMPORTANT:
@@ -705,14 +753,15 @@ class WorkSheet(_WorkSheetMixin):
                     return the raw row.
                 2. if the style is dict: {"color": "00FF00FF"}:
                     the all cells in the row would be red style.
-                3. if the style is list whose lenght is equal to the row:
+                3. if the style is list whose length is equal to the row:
                     such as: [  {"color": "00FF00FF"},
                                 {"color": "00FF00FF"},
                                 {"color": "00FF00FF"},]:
                     the style and the cell will be corresponding in the sequence.
-                4. if the style is list but which's longer or shorter than the row's length:
-                    the style adn the cell will be corresponding in the sequence.
-                    if there is not the style in some cells, jump it.
+                4. if the style is list but which's longer or shorter than the
+                   row's length:
+                   the style adn the cell will be corresponding in the sequence.
+                   if there is not the style in some cells, jump it.
 
         Raises:
             `ValueError`: ...
@@ -734,7 +783,7 @@ class WorkSheet(_WorkSheetMixin):
                 self.headers = {k: next(col_names) for k in iterable}
                 self.ws.append(
                     IterStyledCell(
-                        [header for header in self.headers], style, self
+                        [header for header in self.headers], {}, self
                     )
                 )
             self.ws.append(
@@ -766,7 +815,31 @@ class WorkSheet(_WorkSheetMixin):
 
 
 if __name__ == "__main__":
-    with WorkSheet("test_bbb.xlsx", title="Sheet8") as ws:
-        ws.append(
-            "name",
-        )
+
+    class ExampleStyle:
+        class Cell:
+            style = {
+                "name": "微软雅黑",
+                "size": 10,
+                "wrap_text": True,
+            }
+
+        class Col:
+            style = {
+                "A": {"width": 20},
+                "B": {"width": 25},
+            }
+
+        class Row:
+            style = {
+                "height": 15,
+            }
+
+    with WorkSheet(
+        "test.xlsx",
+        headers_idx=2,
+        # after_styled=ExampleStyle.Col.style,
+    ) as ws:
+        ws.append({"name": "刘德华", "age": 18}, style=ExampleStyle.Cell.style)
+        ws.append({"name": "ysm", "age": 18})
+        ws.append({"name": "liulu", "age": 18})
